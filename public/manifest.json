@@ -1,0 +1,8 @@
+{
+  "short_name": "Live Study",
+  "name": "Live Agent Study Prototype",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}

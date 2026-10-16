@@ -1,0 +1,160 @@
+.study-panel {
+  width: 100%;
+  max-width: 720px;
+  box-sizing: border-box;
+  padding: 16px;
+  color: var(--Neutral-90);
+  font-family: var(--font-family);
+  font-size: 14px;
+
+  h1 {
+    font-size: 18px;
+    margin: 0 0 12px;
+  }
+
+  .study-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--Neutral-60);
+
+    &.wide {
+      grid-column: 1 / -1;
+    }
+    &.grow {
+      flex: 1;
+    }
+    em {
+      font-style: normal;
+    }
+  }
+
+  input,
+  select {
+    font: inherit;
+    font-size: 16px; // stops iOS zooming on focus
+    color: var(--Neutral-90);
+    background: var(--Neutral-10);
+    border: 1px solid var(--Neutral-30);
+    border-radius: 8px;
+    padding: 8px 10px;
+    min-height: 44px;
+    box-sizing: border-box;
+    width: 100%;
+  }
+
+  button {
+    font: inherit;
+    font-size: 14px;
+    min-height: 44px;
+    padding: 8px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--Neutral-30);
+    background: var(--Neutral-20);
+    color: var(--Neutral-90);
+    cursor: pointer;
+    white-space: nowrap;
+
+    &.primary {
+      background: var(--Blue-800);
+      border-color: var(--Blue-500);
+      color: var(--Blue-400);
+    }
+    &:disabled {
+      opacity: 0.5;
+    }
+    &:focus-visible {
+      outline: 2px solid var(--Blue-400);
+    }
+  }
+
+  .row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+
+  .warning {
+    margin: 6px 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(255, 70, 0, 0.12);
+    color: var(--Red-400);
+  }
+
+  .stats,
+  .status {
+    margin: 6px 0;
+    color: var(--Neutral-60);
+  }
+
+  .turns {
+    list-style: none;
+    padding: 0;
+    margin: 12px 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    li {
+      background: var(--Neutral-10);
+      border: 1px solid var(--Neutral-20);
+      border-radius: 10px;
+      padding: 8px 10px;
+    }
+    .turn-head {
+      font-size: 11px;
+      color: var(--Neutral-50);
+      margin-bottom: 4px;
+    }
+    .user {
+      color: var(--Blue-400);
+    }
+    .agent {
+      color: var(--Neutral-90);
+    }
+    .marker {
+      font-size: 11px;
+      color: var(--Red-400);
+      margin-top: 4px;
+    }
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+}
+
+// leave room for the floating control tray
+.study-panel {
+  padding-bottom: 140px;
+}
+
+@media (max-width: 600px) {
+  .study-panel .study-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .control-tray {
+    .actions-nav {
+      gap: 6px;
+      padding: 6px;
+    }
+    .connection-container .text-indicator {
+      display: none;
+    }
+  }
+}
