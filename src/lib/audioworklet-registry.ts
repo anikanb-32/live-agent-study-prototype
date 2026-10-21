@@ -28,6 +28,9 @@ export const registeredWorklets: Map<
   Record<string, WorkletGraph>
 > = new Map();
 
+// Track which modules have already been loaded on each AudioContext
+const loadedModules = new WeakMap<AudioContext, Set<string>>();
+
 export const createWorketFromSrc = (
   workletName: string,
   workletSrc: string,
@@ -41,3 +44,33 @@ export const createWorketFromSrc = (
 
   return URL.createObjectURL(script);
 };
+
+/**
+ * Safely loads an audio worklet module onto an AudioContext without duplicate registration errors.
+ */
+export async function addWorkletModule(
+  context: AudioContext,
+  workletName: string,
+  workletSrc: string,
+): Promise<void> {
+  let set = loadedModules.get(context);
+  if (!set) {
+    set = new Set<string>();
+    loadedModules.set(context, set);
+  }
+  if (set.has(workletName)) {
+    return;
+  }
+  const src = createWorketFromSrc(workletName, workletSrc);
+  try {
+    await context.audioWorklet.addModule(src);
+    set.add(workletName);
+  } catch (e: any) {
+    // If the browser threw because it was already registered in this AudioWorkletGlobalScope, mark as loaded
+    if (String(e?.message || e).includes("already been registered")) {
+      set.add(workletName);
+      return;
+    }
+    throw e;
+  }
+}

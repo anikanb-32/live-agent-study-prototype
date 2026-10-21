@@ -214,7 +214,10 @@ function ControlTray({
             <MediaStreamButton
               isStreaming={webcam.isStreaming}
               label="camera"
-              start={changeStreams(webcam)}
+              start={async () => {
+                unlockAudio();
+                return changeStreams(webcam)();
+              }}
               stop={changeStreams()}
               onIcon="videocam_off"
               offIcon="videocam"

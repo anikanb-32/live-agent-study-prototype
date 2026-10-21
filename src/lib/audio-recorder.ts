@@ -18,7 +18,7 @@ import { audioContext } from "./utils";
 import AudioRecordingWorklet from "./worklets/audio-processing";
 import VolMeterWorket from "./worklets/vol-meter";
 
-import { createWorketFromSrc } from "./audioworklet-registry";
+import { addWorkletModule } from "./audioworklet-registry";
 import EventEmitter from "eventemitter3";
 
 function arrayBufferToBase64(buffer: ArrayBuffer) {
@@ -38,93 +38,127 @@ export class AudioRecorder extends EventEmitter {
   recording: boolean = false;
   recordingWorklet: AudioWorkletNode | undefined;
   vuWorklet: AudioWorkletNode | undefined;
+  muteGain: GainNode | undefined;
+
+  // Output sample rate sent to Gemini Live API is ALWAYS 16000 Hz,
+  // because AudioProcessingWorklet resamples native rates (44.1k/48k) to 16k.
+  public readonly sampleRate = 16000;
 
   private starting: Promise<void> | null = null;
 
-  constructor(public sampleRate = 16000) {
-    super();
-  }
-
   async start() {
+    if (this.recording) return;
+    if (this.starting) return this.starting;
+
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error("Could not request user media");
+      const err = new Error("Could not request user media (getUserMedia not supported)");
+      this.emit("error", err);
+      throw err;
     }
 
-    this.starting = new Promise(async (resolve, reject) => {
-     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      this.audioContext = await audioContext({ id: "audio-in", sampleRate: this.sampleRate });
-      if (this.audioContext.state !== "running") {
-        await this.audioContext.resume().catch(() => {});
-      }
+    this.starting = new Promise<void>(async (resolve, reject) => {
       try {
-        this.source = this.audioContext.createMediaStreamSource(this.stream);
-      } catch (e) {
-        // [study] some browsers refuse to resample the mic into a 16 kHz context;
-        // record at the native rate instead and tell Gemini the real rate
-        console.warn("16 kHz mic context refused, using native rate", e);
-        this.audioContext = new AudioContext();
-        this.sampleRate = this.audioContext.sampleRate;
-        this.source = this.audioContext.createMediaStreamSource(this.stream);
-      }
-
-      const workletName = "audio-recorder-worklet";
-      const src = createWorketFromSrc(workletName, AudioRecordingWorklet);
-
-      await this.audioContext.audioWorklet.addModule(src);
-      this.recordingWorklet = new AudioWorkletNode(
-        this.audioContext,
-        workletName,
-      );
-
-      this.recordingWorklet.port.onmessage = async (ev: MessageEvent) => {
-        // worklet processes recording floats and messages converted buffer
-        const arrayBuffer = ev.data.data.int16arrayBuffer;
-
-        if (arrayBuffer) {
-          const arrayBufferString = arrayBufferToBase64(arrayBuffer);
-          this.emit("data", arrayBufferString);
+        // Request mic stream with mobile-optimized constraints
+        try {
+          this.stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+              channelCount: 1,
+            },
+          });
+        } catch (constraintErr) {
+          // Fallback if specific audio constraints are rejected
+          this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         }
-      };
-      this.source.connect(this.recordingWorklet);
 
-      // vu meter worklet
-      const vuWorkletName = "vu-meter";
-      await this.audioContext.audioWorklet.addModule(
-        createWorketFromSrc(vuWorkletName, VolMeterWorket),
-      );
-      this.vuWorklet = new AudioWorkletNode(this.audioContext, vuWorkletName);
-      this.vuWorklet.port.onmessage = (ev: MessageEvent) => {
-        this.emit("volume", ev.data.volume);
-      };
+        this.audioContext = await audioContext({ id: "audio-in", sampleRate: 16000 });
+        if (this.audioContext.state !== "running") {
+          await this.audioContext.resume().catch(() => {});
+        }
 
-      this.source.connect(this.vuWorklet);
-      this.recording = true;
-      this.emit("started", this.sampleRate);
-      resolve();
-      this.starting = null;
-     } catch (e) {
-      // [study] used to fail silently; report it so the panel can show it
-      this.starting = null;
-      this.emit("error", e);
-      reject(e);
-     }
+        this.source = this.audioContext.createMediaStreamSource(this.stream);
+
+        // Load recorder worklet safely without duplicate registration issues
+        const workletName = "audio-recorder-worklet";
+        await addWorkletModule(this.audioContext, workletName, AudioRecordingWorklet);
+
+        this.recordingWorklet = new AudioWorkletNode(
+          this.audioContext,
+          workletName,
+        );
+
+        this.recordingWorklet.port.onmessage = (ev: MessageEvent) => {
+          const arrayBuffer = ev.data?.data?.int16arrayBuffer;
+          if (arrayBuffer) {
+            const arrayBufferString = arrayBufferToBase64(arrayBuffer);
+            this.emit("data", arrayBufferString);
+          }
+        };
+        this.source.connect(this.recordingWorklet);
+
+        // WebKit / iOS Safari pull architecture:
+        // In Safari, if an AudioWorkletNode's output does not connect to destination,
+        // WebKit does not pull samples and process() is never executed.
+        // Connecting through a mute gain node (gain=0) to destination keeps Safari actively
+        // pulling mic samples without playing mic feedback out of the phone speakers.
+        this.muteGain = this.audioContext.createGain();
+        this.muteGain.gain.value = 0;
+        this.recordingWorklet.connect(this.muteGain);
+        this.muteGain.connect(this.audioContext.destination);
+
+        // Load VU meter worklet
+        const vuWorkletName = "vu-meter";
+        await addWorkletModule(this.audioContext, vuWorkletName, VolMeterWorket);
+        this.vuWorklet = new AudioWorkletNode(this.audioContext, vuWorkletName);
+        this.vuWorklet.port.onmessage = (ev: MessageEvent) => {
+          this.emit("volume", ev.data?.volume || 0);
+        };
+
+        this.source.connect(this.vuWorklet);
+        this.vuWorklet.connect(this.muteGain);
+
+        this.recording = true;
+        this.emit("started", this.sampleRate);
+        resolve();
+      } catch (e) {
+        this.emit("error", e);
+        reject(e);
+      } finally {
+        this.starting = null;
+      }
     });
+
     return this.starting.catch(() => {});
   }
 
   stop() {
-    // its plausible that stop would be called before start completes
-    // such as if the websocket immediately hangs up
     const handleStop = () => {
-      this.source?.disconnect();
+      this.recording = false;
+      try {
+        this.source?.disconnect();
+      } catch (e) {}
+      try {
+        this.recordingWorklet?.disconnect();
+      } catch (e) {}
+      try {
+        this.vuWorklet?.disconnect();
+      } catch (e) {}
+      try {
+        this.muteGain?.disconnect();
+      } catch (e) {}
+
       this.stream?.getTracks().forEach((track) => track.stop());
       this.stream = undefined;
+      this.source = undefined;
       this.recordingWorklet = undefined;
       this.vuWorklet = undefined;
+      this.muteGain = undefined;
     };
+
     if (this.starting) {
-      this.starting.then(handleStop);
+      this.starting.then(handleStop).catch(handleStop);
       return;
     }
     handleStop();

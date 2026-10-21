@@ -20,47 +20,51 @@ export type GetAudioContextOptions = AudioContextOptions & {
 
 const map: Map<string, AudioContext> = new Map();
 
-export const audioContext: (
-  options?: GetAudioContextOptions
-) => Promise<AudioContext> = (() => {
-  const didInteract = new Promise((res) => {
-    window.addEventListener("pointerdown", res, { once: true });
-    window.addEventListener("keydown", res, { once: true });
-  });
+function createAudioContextInstance(options?: GetAudioContextOptions): AudioContext {
+  const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioCtx) {
+    throw new Error("Web Audio API not supported on this browser");
+  }
 
-  return async (options?: GetAudioContextOptions) => {
+  const { id, ...contextOptions } = options || {};
+
+  // Try creating with specific options (e.g. sampleRate: 16000 on desktop Chrome)
+  if (contextOptions.sampleRate) {
     try {
-      const a = new Audio();
-      a.src =
-        "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
-      await a.play();
-      if (options?.id && map.has(options.id)) {
-        const ctx = map.get(options.id);
-        if (ctx) {
-          return ctx;
-        }
-      }
-      const ctx = new AudioContext(options);
-      if (options?.id) {
-        map.set(options.id, ctx);
-      }
-      return ctx;
+      return new AudioCtx(contextOptions);
     } catch (e) {
-      await didInteract;
-      if (options?.id && map.has(options.id)) {
-        const ctx = map.get(options.id);
-        if (ctx) {
-          return ctx;
-        }
-      }
-      const ctx = new AudioContext(options);
-      if (options?.id) {
-        map.set(options.id, ctx);
-      }
-      return ctx;
+      // iOS Safari throws NotSupportedError when sampleRate is outside [44100, 96000]
+      console.warn(
+        `AudioContext with sampleRate ${contextOptions.sampleRate} rejected, using native hardware rate`,
+        e
+      );
     }
-  };
-})();
+  }
+
+  // Fallback to native hardware rate (guaranteed to work across mobile and desktop)
+  return new AudioCtx();
+}
+
+function getOrCreateContext(id?: string, options?: GetAudioContextOptions): AudioContext {
+  if (id && map.has(id)) {
+    return map.get(id)!;
+  }
+  const ctx = createAudioContextInstance(options);
+  if (id) {
+    map.set(id, ctx);
+  }
+  return ctx;
+}
+
+export const audioContext = async (
+  options?: GetAudioContextOptions
+): Promise<AudioContext> => {
+  const ctx = getOrCreateContext(options?.id, options);
+  if (ctx.state !== "running") {
+    await ctx.resume().catch(() => {});
+  }
+  return ctx;
+};
 
 export function base64ToArrayBuffer(base64: string) {
   var binaryString = atob(base64);
@@ -72,11 +76,36 @@ export function base64ToArrayBuffer(base64: string) {
 }
 
 /**
- * [study] iPhones start Web Audio "suspended" and only let a user tap resume it.
- * Call this synchronously inside a click handler.
+ * [study] Mobile browsers (especially iOS Safari) start Web Audio suspended
+ * and strictly require a user gesture (tap/click) to resume or create audio contexts.
+ * Pre-instantiate both contexts and resume them synchronously within the tap handler.
  */
 export function unlockAudio() {
+  if (!map.has("audio-out")) {
+    try {
+      getOrCreateContext("audio-out");
+    } catch (e) {}
+  }
+  if (!map.has("audio-in")) {
+    try {
+      getOrCreateContext("audio-in", { sampleRate: 16000 });
+    } catch (e) {}
+  }
+
   map.forEach((ctx) => {
-    if (ctx.state !== "running") ctx.resume().catch(() => {});
+    if (ctx.state !== "running") {
+      ctx.resume().catch(() => {});
+    }
+  });
+}
+
+// Automatically hook early touch and pointer events to unlock audio as soon as the user taps
+if (typeof window !== "undefined") {
+  const unlockEvents = ["pointerdown", "touchstart", "click"];
+  const handleInteraction = () => {
+    unlockAudio();
+  };
+  unlockEvents.forEach((evt) => {
+    window.addEventListener(evt, handleInteraction, { capture: true, passive: true });
   });
 }

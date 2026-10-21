@@ -16,32 +16,36 @@
 
 const AudioRecordingWorklet = `
 class AudioProcessingWorklet extends AudioWorkletProcessor {
-
-  // send and clear buffer every 2048 samples, 
-  // which at 16khz is about 8 times a second
+  // send and clear buffer every 2048 samples at 16 kHz (~8 times a second)
   buffer = new Int16Array(2048);
-
-  // current write index
   bufferWriteIndex = 0;
+
+  targetRate = 16000;
+  sourcePos = 0;
+  prevSample = 0;
+  hasPrev = false;
 
   constructor() {
     super();
-    this.hasAudio = false;
+    this.isDirect = sampleRate === this.targetRate;
+    this.step = sampleRate / this.targetRate;
   }
 
   /**
-   * @param inputs Float32Array[][] [input#][channel#][sample#] so to access first inputs 1st channel inputs[0][0]
+   * @param inputs Float32Array[][] [input#][channel#][sample#]
    * @param outputs Float32Array[][]
    */
   process(inputs) {
-    if (inputs[0].length) {
+    if (inputs[0] && inputs[0].length > 0) {
       const channel0 = inputs[0][0];
-      this.processChunk(channel0);
+      if (channel0 && channel0.length > 0) {
+        this.processChunk(channel0);
+      }
     }
     return true;
   }
 
-  sendAndClearBuffer(){
+  sendAndClearBuffer() {
     this.port.postMessage({
       event: "chunk",
       data: {
@@ -51,21 +55,42 @@ class AudioProcessingWorklet extends AudioWorkletProcessor {
     this.bufferWriteIndex = 0;
   }
 
-  processChunk(float32Array) {
-    const l = float32Array.length;
-    
-    for (let i = 0; i < l; i++) {
-      // convert float32 -1 to 1 to int16 -32768 to 32767
-      const int16Value = float32Array[i] * 32768;
-      this.buffer[this.bufferWriteIndex++] = int16Value;
-      if(this.bufferWriteIndex >= this.buffer.length) {
-        this.sendAndClearBuffer();
-      }
-    }
-
-    if(this.bufferWriteIndex >= this.buffer.length) {
+  pushSample(val) {
+    // clamp to [-1.0, 1.0] and convert to 16-bit PCM
+    const clamped = Math.max(-1, Math.min(1, val));
+    const int16Value = clamped < 0 ? clamped * 0x8000 : clamped * 0x7FFF;
+    this.buffer[this.bufferWriteIndex++] = int16Value;
+    if (this.bufferWriteIndex >= this.buffer.length) {
       this.sendAndClearBuffer();
     }
+  }
+
+  processChunk(float32Array) {
+    const len = float32Array.length;
+
+    if (this.isDirect) {
+      for (let i = 0; i < len; i++) {
+        this.pushSample(float32Array[i]);
+      }
+      return;
+    }
+
+    // Resample from hardware sampleRate (e.g. 44.1 kHz or 48 kHz on mobile phones)
+    // down to 16 kHz using linear interpolation
+    const step = this.step;
+    while (this.sourcePos < len) {
+      const i0 = Math.floor(this.sourcePos);
+      const frac = this.sourcePos - i0;
+      const s0 = i0 === 0 && this.hasPrev ? this.prevSample : float32Array[i0];
+      const s1 = (i0 + 1 < len) ? float32Array[i0 + 1] : float32Array[len - 1];
+      const interpolated = s0 + frac * (s1 - s0);
+      this.pushSample(interpolated);
+      this.sourcePos += step;
+    }
+
+    this.sourcePos -= len;
+    this.prevSample = float32Array[len - 1];
+    this.hasPrev = true;
   }
 }
 `;
